@@ -1,93 +1,65 @@
 """
 WSGI-обёртка для деплоя на Render/Heroku.
-Использует gunicorn для запуска HTTPServer-приложения.
+Flask-приложение + gunicorn.
 
-Запуск: gunicorn wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+Запуск: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
 """
 
 import os
 import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 # Add backend to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
 
-from server import Handler
+from flask import Flask, jsonify, send_from_directory
+
+app = Flask(__name__, static_folder="frontend", static_url_path="/")
+
+# Import data functions
+from data import list_aircrafts, get_aircraft_sections, get_aircraft_section
 
 
-def application(environ, start_response):
-    """Простое WSGI-приложение для gunicorn."""
-    from io import BytesIO
-    
-    path = environ.get('PATH_INFO', '/')
-    
-    # API routes
-    if path == '/api/aircrafts':
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
-        from data import list_aircrafts
-        body = str.encode(str(list_aircrafts()))
-        status = '200 OK'
-        headers = [('Content-Type', 'application/json; charset=utf-8')]
-    elif path.startswith('/api/sections/'):
-        aircraft_id = path.split('/')[3] if len(path.split('/')) > 3 else ""
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
-        from data import get_aircraft_sections
-        sections = get_aircraft_sections(aircraft_id)
-        if sections:
-            body = str.encode(str({"status": "ok", "data": sections}))
-        else:
-            body = str.encode(str({"status": "error", "message": "Not found"}))
-            status = '404 Not Found'
-        headers = [('Content-Type', 'application/json; charset=utf-8')]
-    elif path.startswith('/api/section/'):
-        parts = path.split('/')
-        aircraft_id = parts[3] if len(parts) > 3 else ""
-        section_id = parts[4] if len(parts) > 4 else ""
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
-        from data import get_aircraft_section
-        section = get_aircraft_section(aircraft_id, section_id)
-        if section:
-            body = str.encode(str({"status": "ok", "data": section}))
-        else:
-            body = str.encode(str({"status": "error", "message": "Not found"}))
-            status = '404 Not Found'
-        headers = [('Content-Type', 'application/json; charset=utf-8')]
-    else:
-        # Static files from frontend/
-        frontend_dir = Path(__file__).parent / "frontend"
-        file_path = frontend_dir / (path.lstrip('/') or 'index.html')
-        
-        if file_path.exists() and file_path.is_file():
-            with open(file_path, 'rb') as f:
-                body = f.read()
-            
-            # Set correct content type based on file extension
-            ext = file_path.suffix.lower()
-            content_types = {
-                '.html': 'text/html; charset=utf-8',
-                '.css': 'text/css; charset=utf-8',
-                '.js': 'application/javascript; charset=utf-8',
-                '.json': 'application/json; charset=utf-8',
-                '.png': 'image/png',
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.gif': 'image/gif',
-                '.svg': 'image/svg+xml',
-            }
-            ct = content_types.get(ext, 'application/octet-stream')
-            headers = [('Content-Type', ct)]
-        else:
-            body = b'{"error": "Not found"}'
-            status = '404 Not Found'
-            headers = [('Content-Type', 'application/json; charset=utf-8')]
-    
-    start_response(status, headers)
-    return [body]
+# ==================== API routes ====================
+
+@app.route("/api/aircrafts")
+def api_aircrafts():
+    return jsonify(list_aircrafts())
+
+
+@app.route("/api/sections/<aircraft_id>")
+def api_sections(aircraft_id):
+    sections = get_aircraft_sections(aircraft_id)
+    if sections:
+        return jsonify({"status": "ok", "data": sections})
+    return jsonify({"status": "error", "message": "Aircraft not found"}), 404
+
+
+@app.route("/api/section/<aircraft_id>/<section_id>")
+def api_section(aircraft_id, section_id):
+    section = get_aircraft_section(aircraft_id, section_id)
+    if section:
+        return jsonify({"status": "ok", "data": section})
+    return jsonify({"status": "error", "message": "Section not found"}), 404
+
+
+# ==================== Static files ====================
+
+@app.route("/")
+def index():
+    return send_from_directory("frontend", "index.html")
+
+
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Not found"}), 404
+
+
+@app.errorhandler(500)
+def server_error(e):
+    return jsonify({"error": "Internal server error"}), 500
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    print(f"🚀 Запуск на порту {port}")
-    server.serve_forever()
+    app.run(host="0.0.0.0", port=port, debug=True)
